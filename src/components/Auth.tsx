@@ -26,6 +26,7 @@ export function Auth({ onAuthSuccess, onSkipAuth }: AuthProps) {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [otpSent, setOtpSent] = useState(false);
   const [timer, setTimer] = useState(0);
+  const [showPhoneSetupGuide, setShowPhoneSetupGuide] = useState(false);
 
   const recaptchaVerifierRef = useRef<RecaptchaVerifier | null>(null);
 
@@ -63,15 +64,23 @@ export function Auth({ onAuthSuccess, onSkipAuth }: AuthProps) {
   const setupRecaptcha = () => {
     try {
       if (recaptchaVerifierRef.current) {
-        recaptchaVerifierRef.current.clear();
+        try {
+          recaptchaVerifierRef.current.clear();
+        } catch (e) {
+          console.warn("Error cleaning previous Recaptcha", e);
+        }
+        recaptchaVerifierRef.current = null;
       }
 
-      // Check if container exists
+      // Reset the recaptcha-container element to prevent "reCAPTCHA has already been rendered"
       const container = document.getElementById("recaptcha-container");
-      if (!container) {
+      if (container) {
+        container.innerHTML = "";
+      } else {
         // Create an element dynamically if it doesn't exist
         const newDiv = document.createElement("div");
         newDiv.id = "recaptcha-container";
+        newDiv.className = "invisible";
         document.body.appendChild(newDiv);
       }
 
@@ -94,7 +103,9 @@ export function Auth({ onAuthSuccess, onSkipAuth }: AuthProps) {
   useEffect(() => {
     return () => {
       if (recaptchaVerifierRef.current) {
-        recaptchaVerifierRef.current.clear();
+        try {
+          recaptchaVerifierRef.current.clear();
+        } catch (e) {}
       }
     };
   }, []);
@@ -109,6 +120,7 @@ export function Auth({ onAuthSuccess, onSkipAuth }: AuthProps) {
 
     setLoading(true);
     setErrorMsg(null);
+    setShowPhoneSetupGuide(false);
 
     try {
       setupRecaptcha();
@@ -137,7 +149,10 @@ export function Auth({ onAuthSuccess, onSkipAuth }: AuthProps) {
       setTimer(60); // 60s cooldown
     } catch (err: any) {
       console.error("Failed to send SMS", err);
-      if (err.code === "auth/invalid-phone-number") {
+      if (err.code === "auth/operation-not-allowed" || err.message?.includes("auth/operation-not-allowed")) {
+        setShowPhoneSetupGuide(true);
+        setErrorMsg("Phone Sign-In is currently disabled in your Firebase console. Please see the setup guide below.");
+      } else if (err.code === "auth/invalid-phone-number") {
         setErrorMsg("Invalid phone number format. Please check and retry.");
       } else if (err.code === "auth/too-many-requests") {
         setErrorMsg("Too many authentication attempts with this number. Please wait before retrying.");
@@ -314,6 +329,7 @@ export function Auth({ onAuthSuccess, onSkipAuth }: AuthProps) {
                     onClick={() => {
                       setAuthMode("options");
                       setOtpSent(false);
+                      setShowPhoneSetupGuide(false);
                       setPhoneNumber("");
                       setVerificationCode("");
                       setConfirmationResult(null);
@@ -329,7 +345,50 @@ export function Auth({ onAuthSuccess, onSkipAuth }: AuthProps) {
                   </div>
                 </div>
 
-                {!otpSent ? (
+                {showPhoneSetupGuide ? (
+                  <div className="space-y-4 font-sans text-xs">
+                    <div className="p-3.5 bg-blue-950/25 border border-blue-500/30 text-blue-300 rounded-xl flex flex-col gap-1.5 leading-relaxed">
+                      <span className="font-semibold uppercase tracking-wider text-[10px] text-blue-400 font-mono">Firebase Setup Required</span>
+                      <p className="text-[11px]">
+                        The <strong>Phone</strong> sign-in provider is disabled in your Firebase project. Action is required to enable OTP challenge SMS.
+                      </p>
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <p className="font-mono text-[9px] text-white/40 uppercase tracking-widest font-bold">Steps to resolve:</p>
+                      <ol className="space-y-1.5 text-white/80 list-decimal pl-4 text-[11px] leading-normal font-sans">
+                        <li>
+                          Open the <a href="https://console.firebase.google.com/project/fundamental-upgrade-1v8b6/authentication/providers" target="_blank" rel="noreferrer" className="text-[#00f2ff] underline font-medium hover:text-[#00f2ff]/80">Firebase Console settings</a>.
+                        </li>
+                        <li>Click <strong>Add new provider</strong> in the <strong>Sign-in method</strong> tab.</li>
+                        <li>Select <strong>Phone</strong> from the list and toggle <strong>Enable</strong>.</li>
+                        <li>Click <strong>Save</strong> to authorize incoming OTP challenges.</li>
+                      </ol>
+                    </div>
+
+                    <div className="pt-2 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowPhoneSetupGuide(false);
+                          setErrorMsg(null);
+                        }}
+                        className="flex-1 py-2.5 bg-white/5 border border-white/10 hover:border-white/20 text-white font-mono text-[10px] rounded-xl transition-all text-center cursor-pointer font-bold uppercase"
+                      >
+                        BACK TO FORM
+                      </button>
+                      <a
+                        href="https://console.firebase.google.com/project/fundamental-upgrade-1v8b6/authentication/providers"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex-1 py-2.5 bg-[#3b82f6] hover:bg-[#2563eb] text-white font-mono text-[10px] rounded-xl text-center cursor-pointer font-bold flex items-center justify-center gap-1.5 uppercase"
+                      >
+                        OPEN CONSOLE
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </a>
+                    </div>
+                  </div>
+                ) : !otpSent ? (
                   /* Phone number Form */
                   <form onSubmit={handleSendOtp} className="space-y-4">
                     <div>

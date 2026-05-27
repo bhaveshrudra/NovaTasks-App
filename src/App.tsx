@@ -125,6 +125,24 @@ export default function App() {
   // Current System time state (displayed in app)
   const [systemTime, setSystemTime] = useState('');
 
+  // Helper to resolve commander display name from Google metadata or Email address username
+  const getCommanderName = () => {
+    if (currentUser) {
+      if (currentUser.displayName) {
+        const first = currentUser.displayName.trim().split(' ')[0];
+        if (first) return first;
+      }
+      if (currentUser.email) {
+        const username = currentUser.email.split('@')[0];
+        const cleaned = username.split(/[._-]/)[0];
+        if (cleaned) {
+          return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+        }
+      }
+    }
+    return 'Alex';
+  };
+
   // Auth state listener on check in
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
@@ -850,7 +868,7 @@ export default function App() {
                 <div>
                   <h2 className="text-xs uppercase font-mono tracking-[0.2em] text-[#3b82f6] font-semibold">System Online</h2>
                   <h3 className="text-2xl md:text-4xl font-display font-medium text-white leading-tight">
-                    Good Morning, Alex <br className="md:hidden" />
+                    Good Morning, {getCommanderName()} <br className="md:hidden" />
                     <span className="text-white/40">Your center has </span>
                     <span className="text-[#3b82f6] font-semibold">{tasks.filter(t => !t.completed).length} items</span>
                     <span className="text-white/40"> pending.</span>
