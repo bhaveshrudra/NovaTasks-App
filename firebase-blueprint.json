@@ -1,0 +1,62 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile metadata",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "phoneNumber": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "createdAt"]
+    },
+    "Task": {
+      "title": "Task",
+      "description": "Action items in the TaskNova system",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "category": { "type": "string", "enum": ["work", "personal"] },
+        "priority": { "type": "string", "enum": ["high", "normal", "system"] },
+        "completed": { "type": "boolean" },
+        "estimatedEnergy": { "type": "string" },
+        "dueDateText": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "title", "category", "priority", "completed", "createdAt"]
+    },
+    "Alarm": {
+      "title": "Alarm",
+      "description": "System alarms linked with soundscape triggers",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "time": { "type": "string" },
+        "title": { "type": "string" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "time", "title", "active", "createdAt"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "Collection of registerd users"
+    },
+    "tasks/{taskId}": {
+      "schema": "Task",
+      "description": "Task items matching users"
+    },
+    "alarms/{alarmId}": {
+      "schema": "Alarm",
+      "description": "Triggers for scheduling alarms"
+    }
+  }
+}
