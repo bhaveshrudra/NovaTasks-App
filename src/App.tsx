@@ -63,6 +63,7 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
   const [authChecking, setAuthChecking] = useState(true);
   const [guestMode, setGuestMode] = useState(false);
+  const [trialTimeRemaining, setTrialTimeRemaining] = useState<number | null>(null);
 
   // Splash Screen loading state
   const [loading, setLoading] = useState(true);
@@ -155,12 +156,58 @@ export default function App() {
     return () => unsub();
   }, []);
 
+  // Watchdog timer to enforce strict 2-minute limits on sandbox/guest sessions
+  useEffect(() => {
+    // Kick out guest immediately if session has already expired previously
+    if (localStorage.getItem('tasknova_trial_expired') === 'true') {
+      const isGuest = guestMode || (currentUser && (currentUser as any).isSimulated);
+      if (isGuest) {
+        setGuestMode(false);
+        setCurrentUser(null);
+        signOut(auth).catch(() => {});
+        addLog("🚨 Sandbox Guest Session has previously expired. Link blocked.", "primary");
+      }
+      return;
+    }
+
+    const isGuest = guestMode || (currentUser && (currentUser as any).isSimulated);
+    if (!isGuest) {
+      setTrialTimeRemaining(null);
+      return;
+    }
+
+    let startedAtStr = localStorage.getItem('tasknova_trial_started_at');
+    if (!startedAtStr) {
+      startedAtStr = String(Date.now());
+      localStorage.setItem('tasknova_trial_started_at', startedAtStr);
+    }
+    const startedAt = parseInt(startedAtStr || '0', 10);
+
+    const updateRemaining = () => {
+      const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+      const remaining = Math.max(0, 120 - elapsed);
+      setTrialTimeRemaining(remaining);
+
+      if (elapsed >= 120) {
+        localStorage.setItem('tasknova_trial_expired', 'true');
+        setGuestMode(false);
+        setCurrentUser(null);
+        signOut(auth).catch(() => {});
+        addLog("🚨 Sandbox Guest Session expired (2-minute limit reached). Forced logout completed.", "primary");
+      }
+    };
+
+    updateRemaining();
+    const timerInterval = setInterval(updateRemaining, 1000);
+    return () => clearInterval(timerInterval);
+  }, [guestMode, currentUser]);
+
   // Helper to persist task to Firestore
   const persistTask = async (task: Task) => {
     if (!auth.currentUser) return;
     try {
       const taskDocRef = doc(db, "tasks", task.id);
-      await setDoc(taskDocRef, {
+      const taskData: any = {
         id: task.id,
         title: task.title,
         category: task.category,
@@ -170,7 +217,15 @@ export default function App() {
         estimatedEnergy: task.estimatedEnergy || "Synthesized load",
         userId: auth.currentUser.uid,
         updatedAt: serverTimestamp(),
-      });
+      };
+      
+      if (task.createdAt) {
+        taskData.createdAt = task.createdAt;
+      } else {
+        taskData.createdAt = serverTimestamp();
+      }
+
+      await setDoc(taskDocRef, taskData);
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `tasks/${task.id}`);
     }
@@ -192,14 +247,22 @@ export default function App() {
     if (!auth.currentUser) return;
     try {
       const alarmDocRef = doc(db, "alarms", alarm.id);
-      await setDoc(alarmDocRef, {
+      const alarmData: any = {
         id: alarm.id,
         title: alarm.title,
         time: alarm.time,
         active: alarm.active,
         userId: auth.currentUser.uid,
         updatedAt: serverTimestamp(),
-      });
+      };
+
+      if (alarm.createdAt) {
+        alarmData.createdAt = alarm.createdAt;
+      } else {
+        alarmData.createdAt = serverTimestamp();
+      }
+
+      await setDoc(alarmDocRef, alarmData);
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `alarms/${alarm.id}`);
     }
@@ -219,6 +282,12 @@ export default function App() {
   // Sync firestore data back dynamically
   useEffect(() => {
     if (!currentUser) return;
+    
+    // Guard for sandbox/simulated user session
+    if (currentUser.isSimulated) {
+      addLog("Initializing high-fidelity Sandbox secure session. Local storage active.", "primary");
+      return;
+    }
     
     const loadFirestoreData = async () => {
       try {
@@ -549,7 +618,7 @@ export default function App() {
   // Add system log helper
   const addLog = (text: string, type: 'primary' | 'secondary' = 'primary') => {
     const newLog: SysLog = {
-      id: 'log_' + Date.now(),
+      id: 'log_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9),
       text,
       time: 'Just now',
       type
@@ -776,8 +845,13 @@ export default function App() {
   if (!currentUser && !guestMode) {
     return (
       <Auth 
-        onAuthSuccess={() => {
-          setCurrentUser(auth.currentUser);
+        onAuthSuccess={(mockUser) => {
+          if (mockUser) {
+            setCurrentUser(mockUser);
+            addLog(`Mainframe link established with simulated node: ${mockUser.email}`, 'primary');
+          } else {
+            setCurrentUser(auth.currentUser);
+          }
           setGuestMode(false);
         }} 
         onSkipAuth={() => {
@@ -790,6 +864,21 @@ export default function App() {
 
   return (
     <div id="tasknova_root" className="bg-[#0d0d12] text-white min-h-screen relative overflow-x-hidden font-sans flex flex-col pb-32">
+      {/* 2-MINUTE TRIAL EXPIRATION COUNTER BAR */}
+      {trialTimeRemaining !== null && (
+        <div className="w-full bg-red-950/80 backdrop-blur-sm border-b border-red-500/30 text-red-200 py-3 px-6 text-center text-xs font-mono tracking-wide flex items-center justify-center gap-2 relative z-50 select-none animate-pulse shrink-0">
+          <AlertOctagon className="w-4 h-4 text-red-400 shrink-0" />
+          <span>
+            ⚠️ <strong className="text-red-400">GUEST SESSION ACTIVE:</strong> MAINFRAME ENFORCED SHUTDOWN IN{" "}
+            <span className="text-white font-bold tabular-nums text-sm">
+              {Math.floor(trialTimeRemaining / 60)}:
+              {String(trialTimeRemaining % 60).padStart(2, '0')}
+            </span>
+            . SECURE PROFILE REGISTRY BY SIGNING IN WITH GOOGLE.
+          </span>
+        </div>
+      )}
+
       {/* Subtle modern background grid */}
       <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.015)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.015)_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none z-0 opacity-60" />
       
@@ -883,6 +972,57 @@ export default function App() {
                   NEW INSTRUCTION
                 </button>
               </div>
+
+              {/* VISUAL PROGRESS TRACKER */}
+              {(() => {
+                const total = tasks.length;
+                const completed = tasks.filter(t => t.completed).length;
+                const percent = total === 0 ? 0 : Math.round((completed / total) * 100);
+                return (
+                  <div className="bg-white/[0.02] backdrop-blur-md border border-white/10 rounded-[24px] p-6 flex flex-col md:flex-row items-center justify-between gap-6 hover:border-white/15 transition-all">
+                    <div className="flex items-center gap-4 w-full md:w-auto">
+                      <div className="w-12 h-12 rounded-2xl bg-[#3b82f6]/10 border border-[#3b82f6]/20 flex items-center justify-center shrink-0">
+                        <Activity className="w-6 h-6 text-[#3b82f6] animate-pulse" />
+                      </div>
+                      <div className="min-w-0 flex-grow">
+                        <h4 className="text-[10px] font-mono tracking-widest uppercase text-white/40 mb-1">
+                          MISSION COMPLETION INDEX
+                        </h4>
+                        <p className="text-sm font-semibold text-white flex items-center gap-2">
+                          <span>{percent}% INTEGRATION COMPLETE</span>
+                          <span className="text-xs font-normal font-mono text-[#3b82f6]">({completed} OF {total} OBJECTIVES)</span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="w-full md:w-80 space-y-2 shrink-0">
+                      <div className="flex justify-between items-center text-[10px] font-mono text-white/40 tracking-wider">
+                        <span>MAINFRAME ALIGNMENT</span>
+                        <span className="text-white font-bold">{percent}%</span>
+                      </div>
+                      <div className="w-full h-2 bg-white/5 rounded-full overflow-hidden border border-white/10 relative">
+                        <motion.div 
+                          className="h-full bg-gradient-to-r from-[#3b82f6] to-[#00f2ff] rounded-full shadow-[0_0_8px_rgba(59,130,246,0.5)]"
+                          initial={{ width: 0 }}
+                          animate={{ width: `${percent}%` }}
+                          transition={{ duration: 0.5, ease: "easeOut" }}
+                        />
+                      </div>
+                      <p className="text-[9px] font-mono tracking-wider text-end text-neutral-500">
+                        {percent === 100 
+                          ? "✓ SYSTEM CRITICAL CLEARANCE SECURED" 
+                          : percent >= 75 
+                          ? "▲ STABLE MATRIX EQUILIBRIUM REACHED" 
+                          : percent >= 50 
+                          ? "⬥ SYSTEM LOAD BALANCING DEPLOYED" 
+                          : percent > 0 
+                          ? "⬦ SECTOR INTEGRITY ESTABLISHED" 
+                          : "□ STANDBY FOR TARGET INSTRUCTIONS"}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* BENTO GRID LAYOUT */}
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -1034,66 +1174,131 @@ export default function App() {
                       <h4 className="text-xs font-mono uppercase text-white/50 tracking-widest pl-2 flex items-center gap-2 border-l border-[#3b82f6]">
                         Work Operations
                       </h4>
-                      <div className="space-y-2">
-                        {filteredTasks.filter(t => t.category === 'work').length === 0 ? (
-                          <p className="text-xs text-white/20 italic pl-3">No active work items calibrated.</p>
-                        ) : (
-                          filteredTasks.filter(t => t.category === 'work').map(t => (
-                            <div 
-                              key={t.id} 
-                              className={`p-4 rounded-xl flex items-center justify-between gap-4 transition-all duration-300 border ${
-                                t.completed 
-                                  ? 'bg-[#ffffff01] border-white/5 opacity-40 line-through' 
-                                  : 'bg-[#ffffff03] backdrop-blur-md border-white/5 hover:border-[#3b82f6]/20'
-                              }`}
+                      <div className="space-y-2 relative">
+                        <AnimatePresence mode="popLayout">
+                          {filteredTasks.filter(t => t.category === 'work').length === 0 ? (
+                            <motion.p 
+                              key="empty-work"
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 1 }}
+                              exit={{ opacity: 0 }}
+                              className="text-xs text-white/20 italic pl-3"
                             >
-                              <div className="flex items-center gap-3.5 flex-grow min-w-0">
-                                <button 
-                                  onClick={() => toggleTaskCompletion(t.id)}
-                                  className={`w-5 h-5 rounded-md border flex items-center justify-center transition-all cursor-pointer ${
-                                    t.completed 
-                                      ? 'border-[#3b82f6] bg-[#3b82f6]/20 text-[#3b82f6]'
-                                      : 'border-[#3b82f6]/40 hover:border-[#3b82f6] bg-transparent text-transparent'
-                                  }`}
-                                >
-                                  <Check className="w-3.5 h-3.5" />
-                                </button>
-                                <div className="min-w-0">
-                                  <p className="text-sm font-medium text-white truncate">{t.title}</p>
-                                  <div className="flex items-center gap-2.5 mt-1 text-[11px] font-mono text-white/40">
-                                    {t.priority === 'high' && (
-                                      <span className="text-red-400 font-bold flex items-center gap-0.5">
-                                        ❗ High
-                                      </span>
-                                    )}
-                                    {t.dueDateText && (
-                                      <span className="flex items-center gap-1">
-                                        <Clock className="w-3 h-3" /> {t.dueDateText}
-                                      </span>
-                                    )}
-                                    {t.estimatedEnergy && (
-                                      <span className="hidden sm:inline">• {t.estimatedEnergy}</span>
-                                    )}
-                                  </div>
-                                </div>
-                              </div>
+                              No active work items calibrated.
+                            </motion.p>
+                          ) : (
+                            filteredTasks.filter(t => t.category === 'work').map(t => {
+                              let priorityBorderClass = '';
+                              if (!t.completed) {
+                                if (t.priority === 'high') {
+                                  priorityBorderClass = 'bg-red-950/10 border-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.25)] animate-[pulse_2s_infinite] hover:border-red-400';
+                                } else if (t.priority === 'system') {
+                                  priorityBorderClass = 'bg-[#00f2ff]/5 border-[#00f2ff]/30 shadow-[0_0_12px_rgba(0,242,255,0.15)] hover:border-[#00f2ff]/60';
+                                } else {
+                                  priorityBorderClass = 'bg-[#3b82f6]/5 border-[#3b82f6]/30 shadow-[0_0_10px_rgba(59,130,246,0.15)] hover:border-[#3b82f6]/60';
+                                }
+                              } else {
+                                priorityBorderClass = 'bg-[#ffffff01] border-white/5 opacity-40 line-through';
+                              }
 
-                              <div className="flex items-center gap-3">
-                                {/* Visual glow priority edge indicator marker */}
-                                <div className={`w-1.5 h-8 rounded-full blur-[1px] ${
-                                  t.priority === 'high' ? 'bg-red-500/40' : 'bg-[#3b82f6]/40'
-                                }`} />
-                                
-                                <button 
-                                  onClick={() => deleteTask(t.id)}
-                                  className="p-1 text-white/20 hover:text-red-400 rounded transition-all cursor-pointer"
+                              return (
+                                <motion.div 
+                                  key={t.id}
+                                  layout
+                                  initial={{ opacity: 0, y: 12, scale: 0.96 }}
+                                  animate={{ 
+                                    opacity: t.completed ? 0.45 : 1, 
+                                    scale: 1, 
+                                    y: 0,
+                                    transition: { duration: 0.3, ease: "easeOut" }
+                                  }}
+                                  exit={{ 
+                                    opacity: 0, 
+                                    scale: 0.92, 
+                                    x: -15,
+                                    transition: { duration: 0.25 }
+                                  }}
+                                  whileHover={{ scale: t.completed ? 1 : 1.008 }}
+                                  whileTap={{ scale: 0.995 }}
+                                  className={`p-4 rounded-xl flex items-center justify-between gap-4 transition-all duration-300 border backdrop-blur-md ${priorityBorderClass}`}
                                 >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                              </div>
-                            </div>
-                          ))
-                        )}
+                                  <div className="flex items-center gap-3.5 flex-grow min-w-0">
+                                    <button 
+                                      onClick={() => toggleTaskCompletion(t.id)}
+                                      className={`w-5 h-5 rounded-md border flex items-center justify-center transition-all cursor-pointer relative overflow-visible shrink-0 ${
+                                        t.completed 
+                                          ? 'border-[#3b82f6] bg-[#3b82f6]/20 text-[#3b82f6]'
+                                          : 'border-[#3b82f6]/40 hover:border-[#3b82f6] bg-transparent text-transparent'
+                                      }`}
+                                    >
+                                      {t.completed ? (
+                                        <motion.div
+                                          initial={{ scale: 0, rotate: -25 }}
+                                          animate={{ scale: 1, rotate: 0 }}
+                                          transition={{ type: "spring", stiffness: 450, damping: 13 }}
+                                        >
+                                          <Check className="w-3.5 h-3.5" />
+                                        </motion.div>
+                                      ) : (
+                                        <Check className="w-3.5 h-3.5" />
+                                      )}
+
+                                      {/* Check finish ripple ring */}
+                                      {t.completed && (
+                                        <motion.span 
+                                          className="absolute inset-0 rounded-md border-2 border-[#00f2ff] opacity-0 pointer-events-none"
+                                          initial={{ scale: 0.8, opacity: 0.9 }}
+                                          animate={{ scale: 2.3, opacity: 0 }}
+                                          transition={{ duration: 0.4, ease: "easeOut" }}
+                                        />
+                                      )}
+                                    </button>
+                                    <div className="min-w-0">
+                                      <p className="text-sm font-medium text-white truncate">{t.title}</p>
+                                      <div className="flex items-center gap-2.5 mt-1 text-[11px] font-mono text-white/40">
+                                        {t.priority === 'high' ? (
+                                          <span className="text-red-400 font-bold flex items-center gap-1 bg-red-950/40 px-2 py-0.5 rounded-full border border-red-500/20 text-[9px] uppercase tracking-wider">
+                                            ❗ High Priority
+                                          </span>
+                                        ) : t.priority === 'system' ? (
+                                          <span className="text-[#00f2ff] font-bold flex items-center gap-1 bg-[#00f2ff]/10 px-2 py-0.5 rounded-full border border-[#00f2ff]/20 text-[9px] uppercase tracking-wider">
+                                            ⚡ System Sync
+                                          </span>
+                                        ) : (
+                                          <span className="text-blue-400 font-bold flex items-center gap-1 bg-[#3b82f6]/10 px-2 py-0.5 rounded-full border border-[#3b82f6]/20 text-[9px] uppercase tracking-wider">
+                                            🔹 Normal
+                                          </span>
+                                        )}
+                                        {t.dueDateText && (
+                                          <span className="flex items-center gap-1">
+                                            <Clock className="w-3 h-3" /> {t.dueDateText}
+                                          </span>
+                                        )}
+                                        {t.estimatedEnergy && (
+                                          <span className="hidden sm:inline">• {t.estimatedEnergy}</span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center gap-3">
+                                    {/* Visual glow priority edge indicator marker */}
+                                    <div className={`w-1.5 h-8 rounded-full blur-[1px] ${
+                                      t.priority === 'high' ? 'bg-red-500' : t.priority === 'system' ? 'bg-[#00f2ff]' : 'bg-[#3b82f6]'
+                                    }`} />
+                                    
+                                    <button 
+                                      onClick={() => deleteTask(t.id)}
+                                      className="p-1 text-white/20 hover:text-red-400 rounded transition-all cursor-pointer"
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </button>
+                                  </div>
+                                </motion.div>
+                              );
+                            })
+                          )}
+                        </AnimatePresence>
                       </div>
                     </div>
 
@@ -1102,59 +1307,128 @@ export default function App() {
                       <h4 className="text-xs font-mono uppercase text-white/50 tracking-widest pl-2 flex items-center gap-2 border-l border-[#3b82f6]">
                         Personal Objectives
                       </h4>
-                      <div className="space-y-2">
-                        {filteredTasks.filter(t => t.category === 'personal').length === 0 ? (
-                           <p className="text-xs text-white/20 italic pl-3">No active personal items calibrated.</p>
-                        ) : (
-                          filteredTasks.filter(t => t.category === 'personal').map(t => (
-                            <div 
-                              key={t.id} 
-                              className={`p-4 rounded-xl flex items-center justify-between gap-4 transition-all duration-300 border ${
-                                t.completed 
-                                  ? 'bg-[#ffffff01] border-white/5 opacity-40 line-through' 
-                                  : 'bg-[#ffffff03] backdrop-blur-md border-white/5 hover:border-[#3b82f6]/20'
-                              }`}
+                      <div className="space-y-2 relative">
+                        <AnimatePresence mode="popLayout">
+                          {filteredTasks.filter(t => t.category === 'personal').length === 0 ? (
+                            <motion.p 
+                              key="empty-personal"
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 1 }}
+                              exit={{ opacity: 0 }}
+                              className="text-xs text-white/20 italic pl-3"
                             >
-                              <div className="flex items-center gap-3.5 flex-grow min-w-0">
-                                <button 
-                                  onClick={() => toggleTaskCompletion(t.id)}
-                                  className={`w-5 h-5 rounded-md border flex items-center justify-center transition-all cursor-pointer ${
-                                    t.completed 
-                                      ? 'border-[#3b82f6] bg-[#3b82f6]/20 text-[#3b82f6]'
-                                      : 'border-[#3b82f6]/40 hover:border-[#3b82f6] bg-transparent text-transparent'
-                                  }`}
-                                >
-                                  <Check className="w-3.5 h-3.5" />
-                                </button>
-                                <div className="min-w-0">
-                                  <p className="text-sm font-medium text-white truncate">{t.title}</p>
-                                  <div className="flex items-center gap-2.5 mt-1 text-[11px] font-mono text-white/40">
-                                    {t.priority === 'high' && (
-                                      <span className="text-red-400 font-bold">❗ High</span>
-                                    )}
-                                    {t.dueDateText && (
-                                      <span className="flex items-center gap-1">
-                                        <Clock className="w-3 h-3" /> {t.dueDateText}
-                                      </span>
-                                    )}
-                                  </div>
-                                </div>
-                              </div>
+                              No active personal items calibrated.
+                            </motion.p>
+                          ) : (
+                            filteredTasks.filter(t => t.category === 'personal').map(t => {
+                              let priorityBorderClass = '';
+                              if (!t.completed) {
+                                if (t.priority === 'high') {
+                                  priorityBorderClass = 'bg-red-950/10 border-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.25)] animate-[pulse_2s_infinite] hover:border-red-400';
+                                } else if (t.priority === 'system') {
+                                  priorityBorderClass = 'bg-[#00f2ff]/5 border-[#00f2ff]/30 shadow-[0_0_12px_rgba(0,242,255,0.15)] hover:border-[#00f2ff]/60';
+                                } else {
+                                  priorityBorderClass = 'bg-[#3b82f6]/5 border-[#3b82f6]/30 shadow-[0_0_10px_rgba(59,130,246,0.15)] hover:border-[#3b82f6]/60';
+                                }
+                              } else {
+                                priorityBorderClass = 'bg-[#ffffff01] border-white/5 opacity-40 line-through';
+                              }
 
-                              <div className="flex items-center gap-3">
-                                {/* Visual glow priority edge indicator marker */}
-                                <div className="w-1.5 h-8 rounded-full blur-[1px] bg-[#3b82f6]/40" />
-                                
-                                <button 
-                                  onClick={() => deleteTask(t.id)}
-                                  className="p-1 text-white/20 hover:text-red-400 rounded transition-all cursor-pointer"
+                              return (
+                                <motion.div 
+                                  key={t.id}
+                                  layout
+                                  initial={{ opacity: 0, y: 12, scale: 0.96 }}
+                                  animate={{ 
+                                    opacity: t.completed ? 0.45 : 1, 
+                                    scale: 1, 
+                                    y: 0,
+                                    transition: { duration: 0.3, ease: "easeOut" }
+                                  }}
+                                  exit={{ 
+                                    opacity: 0, 
+                                    scale: 0.92, 
+                                    x: -15,
+                                    transition: { duration: 0.25 }
+                                  }}
+                                  whileHover={{ scale: t.completed ? 1 : 1.008 }}
+                                  whileTap={{ scale: 0.995 }}
+                                  className={`p-4 rounded-xl flex items-center justify-between gap-4 transition-all duration-300 border backdrop-blur-md ${priorityBorderClass}`}
                                 >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                              </div>
-                            </div>
-                          ))
-                        )}
+                                  <div className="flex items-center gap-3.5 flex-grow min-w-0">
+                                    <button 
+                                      onClick={() => toggleTaskCompletion(t.id)}
+                                      className={`w-5 h-5 rounded-md border flex items-center justify-center transition-all cursor-pointer relative overflow-visible shrink-0 ${
+                                        t.completed 
+                                          ? 'border-[#3b82f6] bg-[#3b82f6]/20 text-[#3b82f6]'
+                                          : 'border-[#3b82f6]/40 hover:border-[#3b82f6] bg-transparent text-transparent'
+                                      }`}
+                                    >
+                                      {t.completed ? (
+                                        <motion.div
+                                          initial={{ scale: 0, rotate: -25 }}
+                                          animate={{ scale: 1, rotate: 0 }}
+                                          transition={{ type: "spring", stiffness: 450, damping: 13 }}
+                                        >
+                                          <Check className="w-3.5 h-3.5" />
+                                        </motion.div>
+                                      ) : (
+                                        <Check className="w-3.5 h-3.5" />
+                                      )}
+
+                                      {/* Check finish ripple ring */}
+                                      {t.completed && (
+                                        <motion.span 
+                                          className="absolute inset-0 rounded-md border-2 border-[#00f2ff] opacity-0 pointer-events-none"
+                                          initial={{ scale: 0.8, opacity: 0.9 }}
+                                          animate={{ scale: 2.3, opacity: 0 }}
+                                          transition={{ duration: 0.4, ease: "easeOut" }}
+                                        />
+                                      )}
+                                    </button>
+                                    <div className="min-w-0">
+                                      <p className="text-sm font-medium text-white truncate">{t.title}</p>
+                                      <div className="flex items-center gap-2.5 mt-1 text-[11px] font-mono text-white/40">
+                                        {t.priority === 'high' ? (
+                                          <span className="text-red-400 font-bold flex items-center gap-1 bg-red-950/40 px-2 py-0.5 rounded-full border border-red-500/20 text-[9px] uppercase tracking-wider">
+                                            ❗ High Priority
+                                          </span>
+                                        ) : t.priority === 'system' ? (
+                                          <span className="text-[#00f2ff] font-bold flex items-center gap-1 bg-[#00f2ff]/10 px-2 py-0.5 rounded-full border border-[#00f2ff]/20 text-[9px] uppercase tracking-wider">
+                                            ⚡ System Sync
+                                          </span>
+                                        ) : (
+                                          <span className="text-blue-400 font-bold flex items-center gap-1 bg-[#3b82f6]/10 px-2 py-0.5 rounded-full border border-[#3b82f6]/20 text-[9px] uppercase tracking-wider">
+                                            🔹 Normal
+                                          </span>
+                                        )}
+                                        {t.dueDateText && (
+                                          <span className="flex items-center gap-1">
+                                            <Clock className="w-3 h-3" /> {t.dueDateText}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center gap-3">
+                                    {/* Visual glow priority edge indicator marker */}
+                                    <div className={`w-1.5 h-8 rounded-full blur-[1px] ${
+                                      t.priority === 'high' ? 'bg-red-500' : t.priority === 'system' ? 'bg-[#00f2ff]' : 'bg-[#3b82f6]'
+                                    }`} />
+                                    
+                                    <button 
+                                      onClick={() => deleteTask(t.id)}
+                                      className="p-1 text-white/20 hover:text-red-400 rounded transition-all cursor-pointer"
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </button>
+                                  </div>
+                                </motion.div>
+                              );
+                            })
+                          )}
+                        </AnimatePresence>
                       </div>
                     </div>
 

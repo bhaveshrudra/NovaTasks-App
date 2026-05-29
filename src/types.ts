@@ -9,6 +9,7 @@ export interface Task {
   completed: boolean;
   estimatedEnergy?: string;
   dueDateText?: string;
+  createdAt?: any;
 }
 
 export interface Alarm {
@@ -16,6 +17,7 @@ export interface Alarm {
   time: string;
   title: string;
   active: boolean;
+  createdAt?: any;
 }
 
 export interface SysLog {
