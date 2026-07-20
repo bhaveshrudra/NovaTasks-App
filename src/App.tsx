@@ -34,7 +34,7 @@ import { Task, Alarm, SysLog, ActiveObjective } from './types';
 import { ambientSynth } from './utils/audio';
 import { auth, db, handleFirestoreError, OperationType } from './utils/firebase';
 import { onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
-import { collection, doc, setDoc, deleteDoc, getDocs, query, where, serverTimestamp } from 'firebase/firestore';
+import { collection, doc, setDoc, updateDoc, deleteDoc, getDocs, query, where, serverTimestamp } from 'firebase/firestore';
 import { Auth } from './components/Auth';
 
 // Pre-populated default tasks matching user mockups
@@ -185,15 +185,15 @@ export default function App() {
 
     const updateRemaining = () => {
       const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-      const remaining = Math.max(0, 120 - elapsed);
+      const remaining = Math.max(0, 420 - elapsed);
       setTrialTimeRemaining(remaining);
 
-      if (elapsed >= 120) {
+      if (elapsed >= 420) {
         localStorage.setItem('tasknova_trial_expired', 'true');
         setGuestMode(false);
         setCurrentUser(null);
         signOut(auth).catch(() => {});
-        addLog("🚨 Sandbox Guest Session expired (2-minute limit reached). Forced logout completed.", "primary");
+        addLog("🚨 Sandbox Guest Session expired (7-minute limit reached). Forced logout completed.", "primary");
       }
     };
 
@@ -207,25 +207,30 @@ export default function App() {
     if (!auth.currentUser) return;
     try {
       const taskDocRef = doc(db, "tasks", task.id);
-      const taskData: any = {
-        id: task.id,
+      const updateData = {
         title: task.title,
         category: task.category,
         priority: task.priority,
         completed: task.completed,
         dueDateText: task.dueDateText || "Today",
         estimatedEnergy: task.estimatedEnergy || "Synthesized load",
-        userId: auth.currentUser.uid,
-        updatedAt: serverTimestamp(),
       };
-      
-      if (task.createdAt) {
-        taskData.createdAt = task.createdAt;
-      } else {
-        taskData.createdAt = serverTimestamp();
-      }
 
-      await setDoc(taskDocRef, taskData);
+      try {
+        await updateDoc(taskDocRef, updateData);
+      } catch (e: any) {
+        if (e.code === 'not-found') {
+          const createData = {
+            ...updateData,
+            id: task.id,
+            userId: auth.currentUser.uid,
+            createdAt: serverTimestamp(),
+          };
+          await setDoc(taskDocRef, createData);
+        } else {
+          throw e;
+        }
+      }
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `tasks/${task.id}`);
     }
@@ -247,22 +252,27 @@ export default function App() {
     if (!auth.currentUser) return;
     try {
       const alarmDocRef = doc(db, "alarms", alarm.id);
-      const alarmData: any = {
-        id: alarm.id,
+      const updateData = {
         title: alarm.title,
         time: alarm.time,
         active: alarm.active,
-        userId: auth.currentUser.uid,
-        updatedAt: serverTimestamp(),
       };
 
-      if (alarm.createdAt) {
-        alarmData.createdAt = alarm.createdAt;
-      } else {
-        alarmData.createdAt = serverTimestamp();
+      try {
+        await updateDoc(alarmDocRef, updateData);
+      } catch (e: any) {
+        if (e.code === 'not-found') {
+          const createData = {
+            ...updateData,
+            id: alarm.id,
+            userId: auth.currentUser.uid,
+            createdAt: serverTimestamp(),
+          };
+          await setDoc(alarmDocRef, createData);
+        } else {
+          throw e;
+        }
       }
-
-      await setDoc(alarmDocRef, alarmData);
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `alarms/${alarm.id}`);
     }
