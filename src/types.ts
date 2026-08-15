@@ -1,5 +1,6 @@
 export type TaskCategory = 'work' | 'personal';
 export type TaskPriority = 'high' | 'normal' | 'system';
+export type TaskDifficulty = 'easy' | 'medium' | 'hard';
 
 export interface Task {
   id: string;
@@ -9,6 +10,7 @@ export interface Task {
   completed: boolean;
   estimatedEnergy?: string;
   dueDateText?: string;
+  difficulty?: TaskDifficulty;
   createdAt?: any;
 }
 

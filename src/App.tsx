@@ -10,8 +10,11 @@ import {
   Clock, 
   Sliders, 
   User, 
+  UserRound,
+  BadgeCheck,
   Search, 
   Bell, 
+  CalendarClock,
   MoreVertical, 
   Play, 
   Square,
@@ -28,14 +31,35 @@ import {
   RefreshCw,
   Award,
   Link as LinkIcon,
-  LogOut
+  LogOut,
+  ListChecks,
+  ChevronRight,
+  Zap,
+  ClipboardList
 } from 'lucide-react';
 import { Task, Alarm, SysLog, ActiveObjective } from './types';
 import { ambientSynth } from './utils/audio';
 import { auth, db, handleFirestoreError, OperationType } from './utils/firebase';
-import { onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
+import { onAuthStateChanged, signOut, signInWithPopup, GoogleAuthProvider, User as FirebaseUser } from 'firebase/auth';
 import { collection, doc, setDoc, updateDoc, deleteDoc, getDocs, query, where, serverTimestamp } from 'firebase/firestore';
-import { Auth } from './components/Auth';
+import { Login } from './components/Login';
+import { AdminDashboard } from './components/AdminDashboard';
+import { Landing } from './components/Landing';
+import { ParticipantTaskList } from './components/ParticipantTaskList';
+import { Background } from './components/ui/Background';
+import { GlassCard } from './components/ui/GlassCard';
+import {
+  setAdminSession,
+  getGuestSession,
+  setGuestSession,
+  clearGuestSession,
+  resetGuestTrial,
+  clearAllSessions,
+  getRoute,
+  navigateTo,
+  onRouteChange,
+  type AppRoute,
+} from './utils/auth';
 
 // Pre-populated default tasks matching user mockups
 const DEFAULT_TASKS: Task[] = [
@@ -58,12 +82,29 @@ const DEFAULT_OBJECTIVES: ActiveObjective[] = [
   }
 ];
 
+// Participant-facing open events (enrolling moves them into “My Tasks”)
+const AVAILABLE_EVENTS: { title: string; category: 'work' | 'personal'; tag: string; description: string }[] = [
+  { title: 'Design Workshop', category: 'work', tag: 'Workshop', description: 'Hands-on session on product design fundamentals.' },
+  { title: 'AI Bootcamp', category: 'work', tag: 'Bootcamp', description: 'Intro to building AI-powered features.' },
+  { title: 'Hackathon Sprint', category: 'work', tag: 'Sprint', description: '48-hour team build with mentor support.' },
+  { title: 'Product Pitch Night', category: 'personal', tag: 'Showcase', description: 'Present your project to the panel.' }
+];
+
+interface Registration {
+  id: string;
+  eventTitle: string;
+  enrolledAt: string;
+}
+
 export default function App() {
   // Active user session state
   const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
   const [authChecking, setAuthChecking] = useState(true);
   const [guestMode, setGuestMode] = useState(false);
   const [trialTimeRemaining, setTrialTimeRemaining] = useState<number | null>(null);
+
+  // Client-side route: 'login' | 'admin' | 'participant' (hash-based)
+  const [route, setRoute] = useState<AppRoute>(() => getRoute());
 
   // Splash Screen loading state
   const [loading, setLoading] = useState(true);
@@ -85,7 +126,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   
   // Tabs: 'dashboard', 'alarms', 'ai-command', 'focus-timer', 'settings'
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'alarms' | 'ai-command' | 'focus-timer' | 'settings'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'alarms' | 'ai-command' | 'focus-timer' | 'settings' | 'my-tasks'>('dashboard');
 
   // AI Command terminal states
   const [aiInput, setAiInput] = useState('');
@@ -141,6 +182,7 @@ export default function App() {
         }
       }
     }
+    if (guestMode) return 'Guest';
     return 'Alex';
   };
 
@@ -156,6 +198,81 @@ export default function App() {
     return () => unsub();
   }, []);
 
+  // -------------------------------------------------------------------------
+  // Routing + session guards (hash-based: '#/login', '#/admin', '#/participant')
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    const syncRoute = () => {
+      const r = getRoute();
+      const hasAdmin = localStorage.getItem('tasknova_admin_session') === '1';
+      const hasGuest = getGuestSession();
+
+      // An active admin session always wins and never sees the participant dashboard
+      if (hasAdmin) {
+        if (r !== 'admin') navigateTo('admin');
+        setRoute('admin');
+        return;
+      }
+
+      // Guests (or logged-out users) must not reach /admin
+      if (r === 'admin') {
+        navigateTo('login');
+        setRoute('login');
+        return;
+      }
+
+      // /participant requires an active guest (or Firebase) session
+      if (r === 'participant' && !hasGuest && !auth.currentUser) {
+        navigateTo('login');
+        setRoute('login');
+        return;
+      }
+
+      setRoute(r);
+    };
+
+    syncRoute();
+    return onRouteChange(syncRoute);
+  }, []);
+
+  // -------------------------------------------------------------------------
+  // Auth entry handlers (Admin / Guest / Google) + logout
+  // -------------------------------------------------------------------------
+  const handleAdminLogin = (email: string) => {
+    setAdminSession();
+    setGuestMode(false);
+    addLog(`Admin mainframe unlocked for: ${email}`, 'primary');
+    navigateTo('admin');
+  };
+
+  const handleGuestLogin = () => {
+    resetGuestTrial();
+    setGuestSession();
+    setGuestMode(true);
+    setCurrentUser(null);
+    addLog('Authorized session bypass. Sandbox guest state active.', 'secondary');
+    navigateTo('participant');
+  };
+
+  const handleGoogleLogin = async () => {
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: 'select_account' });
+    await signInWithPopup(auth, provider);
+    // Google users are participants too — persist the participant session flag
+    setGuestSession();
+    setGuestMode(false);
+    navigateTo('participant');
+  };
+
+  const handleLogout = async () => {
+    clearAllSessions();
+    setGuestMode(false);
+    setCurrentUser(null);
+    await signOut(auth).catch(() => {});
+    addLog('Session terminated. Returning to authorization gateway.', 'secondary');
+    navigateTo('login');
+  };
+
   // Watchdog timer to enforce strict 2-minute limits on sandbox/guest sessions
   useEffect(() => {
     // Kick out guest immediately if session has already expired previously
@@ -164,6 +281,7 @@ export default function App() {
       if (isGuest) {
         setGuestMode(false);
         setCurrentUser(null);
+        clearGuestSession();
         signOut(auth).catch(() => {});
         addLog("🚨 Sandbox Guest Session has previously expired. Link blocked.", "primary");
       }
@@ -192,6 +310,7 @@ export default function App() {
         localStorage.setItem('tasknova_trial_expired', 'true');
         setGuestMode(false);
         setCurrentUser(null);
+        clearGuestSession();
         signOut(auth).catch(() => {});
         addLog("🚨 Sandbox Guest Session expired (7-minute limit reached). Forced logout completed.", "primary");
       }
@@ -294,7 +413,7 @@ export default function App() {
     if (!currentUser) return;
     
     // Guard for sandbox/simulated user session
-    if (currentUser.isSimulated) {
+    if ((currentUser as any).isSimulated) {
       addLog("Initializing high-fidelity Sandbox secure session. Local storage active.", "primary");
       return;
     }
@@ -636,6 +755,45 @@ export default function App() {
     setSysLogs(prev => [newLog, ...prev.slice(0, 9)]);
   };
 
+  // Participant registrations (localStorage-backed prototype store)
+  const [registrations, setRegistrations] = useState<Registration[]>(() => {
+    try {
+      const raw = localStorage.getItem('tasknova_registrations');
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    localStorage.setItem('tasknova_registrations', JSON.stringify(registrations));
+  }, [registrations]);
+
+  // Enroll in an available event -> adds to My Tasks + records registration
+  const enrollInEvent = (event: { title: string; category: 'work' | 'personal' }) => {
+    const already = tasks.some(t => t.title.toLowerCase() === event.title.toLowerCase());
+    if (already) {
+      addLog(`Event "${event.title}" already enrolled.`, 'secondary');
+      return;
+    }
+    const created: Task = {
+      id: 'event_' + Date.now(),
+      title: event.title,
+      category: event.category,
+      priority: 'normal',
+      completed: false,
+      dueDateText: 'Enrolled Event',
+      estimatedEnergy: 'Open registration'
+    };
+    setTasks(prev => [created, ...prev]);
+    persistTask(created);
+    setRegistrations(prev => [
+      { id: 'reg_' + Date.now(), eventTitle: event.title, enrolledAt: new Date().toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) },
+      ...prev
+    ]);
+    addLog(`Enrolled in event: "${event.title}"`, 'primary');
+  };
+
   // Check off task function
   const toggleTaskCompletion = (taskId: string) => {
     setTasks(prev => {
@@ -851,29 +1009,31 @@ export default function App() {
     );
   }
 
-  // Authorisation portal check before landing
-  if (!currentUser && !guestMode) {
+  // Route: public landing / marketing page
+  if (route === 'landing') {
+    return <Landing onGuestLogin={handleGuestLogin} />;
+  }
+
+  // Route: login page (two choices: Admin Login or Continue as Guest)
+  if (route === 'login') {
     return (
-      <Auth 
-        onAuthSuccess={(mockUser) => {
-          if (mockUser) {
-            setCurrentUser(mockUser);
-            addLog(`Mainframe link established with simulated node: ${mockUser.email}`, 'primary');
-          } else {
-            setCurrentUser(auth.currentUser);
-          }
-          setGuestMode(false);
-        }} 
-        onSkipAuth={() => {
-          setGuestMode(true);
-          addLog("Authorized session bypass. Sandbox guest state active.", "secondary");
-        }} 
+      <Login
+        onAdminLogin={handleAdminLogin}
+        onGuestLogin={handleGuestLogin}
+        onGoogleLogin={handleGoogleLogin}
       />
     );
   }
 
+  // Route: admin dashboard (guarded — only reachable with a valid admin session)
+  if (route === 'admin') {
+    return <AdminDashboard onLogout={handleLogout} />;
+  }
+
   return (
-    <div id="tasknova_root" className="bg-[#0d0d12] text-white min-h-screen relative overflow-x-hidden font-sans flex flex-col pb-32">
+    <div id="tasknova_root" className="bg-[#040714] text-white min-h-screen relative overflow-x-hidden font-sans flex flex-col pb-32">
+      <Background intensity="subtle" />
+
       {/* 2-MINUTE TRIAL EXPIRATION COUNTER BAR */}
       {trialTimeRemaining !== null && (
         <div className="w-full bg-red-950/80 backdrop-blur-sm border-b border-red-500/30 text-red-200 py-3 px-6 text-center text-xs font-mono tracking-wide flex items-center justify-center gap-2 relative z-50 select-none animate-pulse shrink-0">
@@ -889,15 +1049,8 @@ export default function App() {
         </div>
       )}
 
-      {/* Subtle modern background grid */}
-      <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.015)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.015)_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none z-0 opacity-60" />
-      
-      {/* Background ambient glows */}
-      <div className="absolute top-[5%] left-[5%] w-[500px] h-[500px] bg-[#3b82f6] opacity-[0.03] blur-[120px] rounded-full pointer-events-none" />
-      <div className="absolute bottom-[10%] right-[5%] w-[500px] h-[500px] bg-[#10b981] opacity-[0.02] blur-[120px] rounded-full pointer-events-none" />
-
       {/* FIXED HEADER */}
-      <header className="sticky top-0 w-full z-40 bg-[#0d0d12]/85 backdrop-blur-md border-b border-white/5 flex justify-between items-center px-6 md:px-12 h-16 md:h-20 select-none">
+      <header className="sticky top-0 w-full z-40 glass-strong border-b border-white/5 flex justify-between items-center px-6 md:px-12 h-16 md:h-20 select-none">
         <div className="flex items-center gap-3">
           {/* Avatar Profile Mockup */}
           <div 
@@ -943,6 +1096,14 @@ export default function App() {
             <Bell className="w-4 h-4 animate-swing" />
             <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
           </button>
+
+          <button 
+            onClick={handleLogout}
+            className="p-1.5 md:p-2 rounded-full bg-white/5 hover:bg-red-950/40 border border-white/10 text-white/50 hover:text-red-400 transition-all active:scale-95 cursor-pointer"
+            title="Logout / exit session"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
         </div>
       </header>
 
@@ -981,6 +1142,136 @@ export default function App() {
                   <Plus className="w-4 h-4" />
                   NEW INSTRUCTION
                 </button>
+              </div>
+
+              {/* PARTICIPANT SESSION & REGISTRATION STATUS STRIP */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                {/* Session / profile summary */}
+                <div className="bg-[#ffffff03] backdrop-blur-md border border-white/10 rounded-[24px] p-5 flex items-center gap-4 hover:border-white/15 transition-all">
+                  <div className="w-11 h-11 rounded-2xl bg-[#3b82f6]/10 border border-[#3b82f6]/20 flex items-center justify-center shrink-0">
+                    <UserRound className="w-5 h-5 text-[#3b82f6]" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[9px] font-mono uppercase tracking-widest text-white/40">Participant Session</p>
+                    <p className="text-sm font-semibold text-white truncate">
+                      {getCommanderName()}
+                    </p>
+                    <span className={`inline-block mt-1 px-2 py-0.5 rounded-full text-[9px] font-mono uppercase tracking-wider border font-semibold ${
+                      guestMode
+                        ? 'bg-[#00f2ff]/10 border-[#00f2ff]/30 text-[#00f2ff]'
+                        : 'bg-[#3b82f6]/10 border-[#3b82f6]/30 text-[#3b82f6]'
+                    }`}>
+                      {guestMode ? 'Guest Access' : currentUser ? 'Google Sync' : 'Guest'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Registration status */}
+                <div className="bg-[#ffffff03] backdrop-blur-md border border-white/10 rounded-[24px] p-5 flex items-center gap-4 hover:border-white/15 transition-all">
+                  <div className="w-11 h-11 rounded-2xl bg-[#10b981]/10 border border-[#10b981]/20 flex items-center justify-center shrink-0">
+                    <BadgeCheck className="w-5 h-5 text-[#10b981]" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[9px] font-mono uppercase tracking-widest text-white/40">Registration Status</p>
+                    <p className="text-sm font-semibold text-[#10b981]">ACTIVE</p>
+                    <p className="text-[10px] font-mono text-white/40 truncate">
+                      {registrations.length} event{registrations.length === 1 ? '' : 's'} enrolled · ID {guestMode ? 'GUEST' : 'TASK'}-{String(currentUser?.uid ? currentUser.uid.slice(0, 6) : (Date.now() % 100000)).toUpperCase()}
+                    </p>
+                  </div>
+                </div>
+
+                {/* My tasks summary */}
+                <div className="bg-[#ffffff03] backdrop-blur-md border border-white/10 rounded-[24px] p-5 flex items-center gap-4 hover:border-white/15 transition-all">
+                  <div className="w-11 h-11 rounded-2xl bg-[#00f2ff]/10 border border-[#00f2ff]/20 flex items-center justify-center shrink-0">
+                    <Target className="w-5 h-5 text-[#00f2ff]" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[9px] font-mono uppercase tracking-widest text-white/40">My Tasks</p>
+                    <p className="text-sm font-semibold text-white">
+                      {tasks.filter(t => !t.completed).length} pending · {tasks.filter(t => t.completed).length} done
+                    </p>
+                    <p className="text-[10px] font-mono text-white/40 truncate">
+                      {tasks.length} total objectives loaded
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* PARTICIPANT HUB: QUICK ACTIONS / DEADLINES / NOTIFICATIONS */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                {/* Quick actions */}
+                <div className="glass rounded-[24px] p-5 hover-lift">
+                  <h4 className="text-[10px] font-mono uppercase tracking-widest text-[#00f2ff] font-semibold mb-4 flex items-center gap-1.5">
+                    <Zap className="w-3.5 h-3.5" /> Quick Actions
+                  </h4>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <button onClick={() => setShowAddModal(true)} className="p-3 rounded-xl bg-[#3b82f6]/10 hover:bg-[#3b82f6]/20 border border-[#3b82f6]/25 text-[#3b82f6] font-mono text-[9px] font-bold uppercase tracking-wider transition-all cursor-pointer flex flex-col items-center gap-1.5">
+                      <Plus className="w-4 h-4" /> New Task
+                    </button>
+                    <button onClick={() => { setActiveTab('focus-timer'); setIsFocusing(true); }} className="p-3 rounded-xl bg-[#00f2ff]/10 hover:bg-[#00f2ff]/20 border border-[#00f2ff]/25 text-[#00f2ff] font-mono text-[9px] font-bold uppercase tracking-wider transition-all cursor-pointer flex flex-col items-center gap-1.5">
+                      <Clock className="w-4 h-4" /> Focus Mode
+                    </button>
+                    <button onClick={() => setActiveTab('ai-command')} className="p-3 rounded-xl bg-[#6366f1]/10 hover:bg-[#6366f1]/20 border border-[#6366f1]/25 text-[#a5b4fc] font-mono text-[9px] font-bold uppercase tracking-wider transition-all cursor-pointer flex flex-col items-center gap-1.5">
+                      <Mic className="w-4 h-4" /> AI Command
+                    </button>
+                    <button onClick={() => document.getElementById('available-events')?.scrollIntoView({ behavior: 'smooth' })} className="p-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 font-mono text-[9px] font-bold uppercase tracking-wider transition-all cursor-pointer flex flex-col items-center gap-1.5">
+                      <ListChecks className="w-4 h-4" /> Events
+                    </button>
+                  </div>
+                </div>
+
+                {/* Upcoming deadlines */}
+                <div className="glass rounded-[24px] p-5 hover-lift">
+                  <h4 className="text-[10px] font-mono uppercase tracking-widest text-[#3b82f6] font-semibold mb-4 flex items-center gap-1.5">
+                    <CalendarClock className="w-3.5 h-3.5" /> Upcoming Deadlines
+                  </h4>
+                  <div className="space-y-2.5">
+                    {tasks.filter(t => !t.completed && t.dueDateText && t.dueDateText !== 'Enrolled Event').slice(0, 4).map(t => (
+                      <div key={t.id} className="flex items-center justify-between gap-3 p-3 rounded-xl bg-white/5 border border-white/5">
+                        <p className="text-xs text-white/80 font-medium truncate">{t.title}</p>
+                        <span className="shrink-0 px-2 py-0.5 rounded-full bg-[#3b82f6]/10 border border-[#3b82f6]/25 text-[#3b82f6] text-[9px] font-mono uppercase tracking-wider">
+                          {t.dueDateText}
+                        </span>
+                      </div>
+                    ))}
+                    {tasks.filter(t => !t.completed && t.dueDateText && t.dueDateText !== 'Enrolled Event').length === 0 && (
+                      <p className="text-[11px] font-mono text-white/30">No upcoming deadlines. All clear, Commander.</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Notifications */}
+                <div className="glass rounded-[24px] p-5 hover-lift">
+                  <h4 className="text-[10px] font-mono uppercase tracking-widest text-[#10b981] font-semibold mb-4 flex items-center gap-1.5">
+                    <Bell className="w-3.5 h-3.5" /> Notifications
+                  </h4>
+                  <div className="space-y-2.5">
+                    {registrations.length > 0 ? registrations.slice(0, 3).map(r => (
+                      <div key={r.id} className="flex items-center gap-3 p-3 rounded-xl bg-white/5 border border-white/5">
+                        <BadgeCheck className="w-4 h-4 text-[#10b981] shrink-0" />
+                        <div className="min-w-0">
+                          <p className="text-xs text-white/80 font-medium truncate">Enrolled in {r.eventTitle}</p>
+                          <p className="text-[9px] font-mono text-white/35">{r.enrolledAt}</p>
+                        </div>
+                      </div>
+                    )) : (
+                      <div className="flex items-center gap-3 p-3 rounded-xl bg-white/5 border border-white/5">
+                        <Sparkles className="w-4 h-4 text-[#00f2ff] shrink-0" />
+                        <div className="min-w-0">
+                          <p className="text-xs text-white/80 font-medium truncate">Welcome to TaskNova, Commander</p>
+                          <p className="text-[9px] font-mono text-white/35">Enroll in an event to get started</p>
+                        </div>
+                      </div>
+                    )}
+                    <div className="flex items-center gap-3 p-3 rounded-xl bg-white/5 border border-white/5">
+                      <Target className="w-4 h-4 text-[#3b82f6] shrink-0" />
+                      <div className="min-w-0">
+                        <p className="text-xs text-white/80 font-medium truncate">{tasks.filter(t => !t.completed).length} objectives pending</p>
+                        <p className="text-[9px] font-mono text-white/35">Stay sharp, Commander</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
 
               {/* VISUAL PROGRESS TRACKER */}
@@ -1153,9 +1444,16 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Checklist Categories: Work & Personal */}
-                  <div className="space-y-6">
-                    {/* Search bar inside list switcher */}
+                  {/* Checklist Categories: Work & Personal (reusable — powers the My Tasks tab) */}
+                  <ParticipantTaskList
+                    tasks={tasks}
+                    searchQuery={searchQuery}
+                    onSearchChange={setSearchQuery}
+                    onToggle={toggleTaskCompletion}
+                    onDelete={deleteTask}
+                  />
+                  <div className="hidden">
+                    {/* Legacy inline checklist — kept only for tab-history compatibility */}
                     <div className="flex items-center gap-3">
                       <div className="relative flex-grow">
                         <Search className="absolute left-3.5 top-2.5 w-4 h-4 text-white/30" />
@@ -1541,7 +1839,47 @@ export default function App() {
             </motion.div>
           )}
 
-          {/* 2. NEXT INTERCEPTS / SCHEDULER TAB */}
+          {/* MY TASKS TAB (dedicated checklist view) */}
+          {activeTab === 'my-tasks' && (
+            <motion.div
+              key="my-tasks"
+              initial={{ opacity: 0, y: 15 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -15 }}
+              transition={{ duration: 0.3 }}
+              className="max-w-xl mx-auto space-y-8"
+            >
+              <div>
+                <h3 className="text-xs uppercase font-mono tracking-[0.2em] text-[#3b82f6] font-semibold">MISSION ROSTER</h3>
+                <h4 className="text-2xl font-display font-medium text-white">My Tasks</h4>
+                <p className="text-xs text-white/40 mt-1 font-mono">Your enrolled objectives and live progress.</p>
+              </div>
+
+              {/* Progress summary */}
+              <div className="glass rounded-[24px] p-5 flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-[10px] font-mono uppercase tracking-widest text-white/40">Completion</p>
+                  <p className="text-2xl font-display font-medium text-white mt-1">
+                    {tasks.length ? Math.round((tasks.filter(t => t.completed).length / tasks.length) * 100) : 0}%
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="text-[10px] font-mono uppercase tracking-widest text-white/40">Status</p>
+                  <p className="text-sm font-semibold text-[#10b981] mt-1">{tasks.filter(t => !t.completed).length} pending · {tasks.filter(t => t.completed).length} done</p>
+                </div>
+              </div>
+
+              <ParticipantTaskList
+                tasks={tasks}
+                searchQuery={searchQuery}
+                onSearchChange={setSearchQuery}
+                onToggle={toggleTaskCompletion}
+                onDelete={deleteTask}
+              />
+            </motion.div>
+          )}
+
+          {/* 2. NOTIFICATIONS & ALERTS TAB (scheduler) */}
           {activeTab === 'alarms' && (
             <motion.div
               key="alarms"
@@ -1552,9 +1890,9 @@ export default function App() {
               className="max-w-xl mx-auto space-y-8"
             >
               <div>
-                <h3 className="text-xs uppercase font-mono tracking-[0.2em] text-[#3b82f6] font-semibold">CALIBRATION PROTOCOLS</h3>
-                <h4 className="text-2xl font-display font-medium text-white">Next Intercepts</h4>
-                <p className="text-xs text-white/40 mt-1 font-mono">Select specific neural timings to trigger priority overlays.</p>
+                <h3 className="text-xs uppercase font-mono tracking-[0.2em] text-[#3b82f6] font-semibold">ALERT PROTOCOLS</h3>
+                <h4 className="text-2xl font-display font-medium text-white">Notifications & Alerts</h4>
+                <p className="text-xs text-white/40 mt-1 font-mono">Manage scheduled alert triggers that fire priority overlays.</p>
               </div>
 
               <div className="bg-[#ffffff03] backdrop-blur-md border border-white/10 rounded-[24px] p-6 space-y-6">
@@ -1804,7 +2142,7 @@ export default function App() {
             </motion.div>
           )}
 
-          {/* 4. AI COMMAND TERMINAL / ASSISTANT TAB */}
+          {/* 4. TASKS & AI COMMAND TAB */}
           {activeTab === 'ai-command' && (
             <motion.div
               key="ai-command"
@@ -1815,9 +2153,59 @@ export default function App() {
               className="max-w-xl mx-auto space-y-8"
             >
               <div>
-                <h3 className="text-xs uppercase font-mono tracking-[0.2em] text-[#3b82f6] font-semibold">NEURAL INTELLIGENCE</h3>
-                <h4 className="text-2xl font-display font-medium text-white">Commander Assist</h4>
-                <p className="text-xs text-white/40 mt-1 pr-4">Type instructions to let Nova AI automatically categorize, prioritize and schedule your tasks.</p>
+                <h3 className="text-xs uppercase font-mono tracking-[0.2em] text-[#3b82f6] font-semibold">TASK FORGE</h3>
+                <h4 className="text-2xl font-display font-medium text-white">Tasks & AI Command</h4>
+                <p className="text-xs text-white/40 mt-1 pr-4">Browse available events to enroll in, or type instructions to let Nova AI categorize, prioritize and schedule your tasks.</p>
+              </div>
+
+              {/* Available tasks & events to enroll in */}
+              <div id="available-events" className="space-y-4">
+                <div className="flex justify-between items-center px-1">
+                  <h4 className="text-xs uppercase font-mono tracking-wider font-semibold text-white/50 flex items-center gap-2">
+                    <CalendarClock className="w-4 h-4 text-[#00f2ff] animate-pulse" />
+                    AVAILABLE TASKS & EVENTS
+                  </h4>
+                  <span className="text-[10px] font-mono text-white/40 uppercase">Open Registration</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {AVAILABLE_EVENTS.map((ev) => {
+                    const enrolled = tasks.some(t => t.title.toLowerCase() === ev.title.toLowerCase());
+                    return (
+                      <div
+                        key={ev.title}
+                        className="glass p-5 rounded-[24px] hover-lift flex flex-col justify-between min-h-[132px]"
+                      >
+                        <div className="min-w-0">
+                          <span className="px-2 py-0.5 rounded-full text-[9px] font-mono border bg-[#00f2ff]/5 border-[#00f2ff]/20 text-[#00f2ff] uppercase tracking-wider">
+                            {ev.tag}
+                          </span>
+                          <h5 className="text-sm font-semibold text-white mt-2 truncate">{ev.title}</h5>
+                          <p className="text-[11px] text-white/40 font-mono mt-1 line-clamp-2">{ev.description}</p>
+                        </div>
+                        <button
+                          onClick={() => enrollInEvent(ev)}
+                          disabled={enrolled}
+                          className={`mt-4 w-full py-3 rounded-full font-mono text-[10px] font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                            enrolled
+                              ? 'bg-[#10b981]/10 border border-[#10b981]/30 text-[#10b981]'
+                              : 'bg-[#00f2ff]/10 hover:bg-[#00f2ff]/20 border border-[#00f2ff]/30 text-[#00f2ff] active:scale-95'
+                          }`}
+                        >
+                          {enrolled ? (
+                            <span className="flex items-center gap-1.5 justify-center">
+                              <Check className="w-3.5 h-3.5" /> Enrolled
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-1.5 justify-center">
+                              <Plus className="w-3.5 h-3.5" /> Enroll
+                            </span>
+                          )}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
 
               <div className="bg-[#ffffff03] backdrop-blur-md border border-white/10 rounded-[24px] p-6 flex flex-col gap-4">
@@ -1926,7 +2314,7 @@ export default function App() {
             </motion.div>
           )}
 
-          {/* 5. SYSTEM SETTINGS TAB */}
+          {/* 5. PROFILE & SETTINGS TAB */}
           {activeTab === 'settings' && (
             <motion.div
               key="settings"
@@ -1936,6 +2324,67 @@ export default function App() {
               transition={{ duration: 0.3 }}
               className="max-w-xl mx-auto space-y-8"
             >
+              {/* PARTICIPANT PROFILE & REGISTRATIONS */}
+              <div>
+                <h3 className="text-xs uppercase font-mono tracking-[0.2em] text-[#00f2ff] font-semibold">PARTICIPANT PROFILE</h3>
+                <h4 className="text-2xl font-display font-medium text-white">Guest Information</h4>
+              </div>
+
+              <div className="bg-[#ffffff03] backdrop-blur-md border border-white/10 rounded-[24px] p-6 space-y-6">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                  <div className="w-14 h-14 rounded-2xl bg-[#3b82f6]/10 border border-[#3b82f6]/25 flex items-center justify-center shrink-0">
+                    <UserRound className="w-7 h-7 text-[#3b82f6]" />
+                  </div>
+                  <div className="min-w-0 flex-grow">
+                    <p className="text-sm font-semibold text-white">{getCommanderName()}</p>
+                    <p className="text-[10px] font-mono text-white/40 mt-0.5">
+                      {currentUser ? (currentUser.email || 'Google synced participant') : 'Guest participant · sandbox profile'}
+                    </p>
+                    <span className={`inline-block mt-1.5 px-2 py-0.5 rounded-full text-[9px] font-mono uppercase tracking-wider border font-semibold ${
+                      guestMode
+                        ? 'bg-[#00f2ff]/10 border-[#00f2ff]/30 text-[#00f2ff]'
+                        : 'bg-[#3b82f6]/10 border-[#3b82f6]/30 text-[#3b82f6]'
+                    }`}>
+                      {guestMode ? 'Guest Session' : currentUser ? 'Google Authenticated' : 'Guest Session'}
+                    </span>
+                  </div>
+                  <p className="text-[9px] font-mono text-white/30 uppercase tracking-widest shrink-0">
+                    ID {guestMode ? 'GUEST' : 'TASK'}-{String(currentUser?.uid ? currentUser.uid.slice(0, 6) : (Date.now() % 100000)).toUpperCase()}
+                  </p>
+                </div>
+
+                <div className="pt-4 border-t border-white/5">
+                  <h5 className="text-xs uppercase font-mono text-[#3b82f6] tracking-widest font-semibold mb-3">My Registrations</h5>
+                  {registrations.length > 0 ? (
+                    <div className="space-y-2">
+                      {registrations.map(r => (
+                        <div key={r.id} className="flex items-center justify-between gap-3 p-3 bg-white/5 border border-white/5 rounded-xl">
+                          <div className="min-w-0">
+                            <p className="text-xs text-white font-medium truncate">{r.eventTitle}</p>
+                            <p className="text-[10px] font-mono text-white/40">Enrolled {r.enrolledAt}</p>
+                          </div>
+                          <BadgeCheck className="w-4 h-4 text-[#10b981] shrink-0" />
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] font-mono text-white/30">
+                      No event registrations yet. Enroll from the Available Tasks & Events section on the dashboard.
+                    </p>
+                  )}
+                </div>
+
+                <div className="pt-4 border-t border-white/5">
+                  <button
+                    onClick={handleLogout}
+                    className="w-full py-3 bg-red-950/25 hover:bg-red-950/45 border border-red-500/30 text-red-400 text-xs font-mono rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2 font-bold uppercase tracking-wider"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    Logout / Exit Session
+                  </button>
+                </div>
+              </div>
+
               <div>
                 <h3 className="text-xs uppercase font-mono tracking-[0.2em] text-[#3b82f6] font-semibold">SYSTEM CONTROL</h3>
                 <h4 className="text-2xl font-display font-medium text-white">Central Config</h4>
@@ -2048,69 +2497,41 @@ export default function App() {
       <div className="fixed bottom-24 right-6 md:right-12 z-30">
         <button 
           onClick={() => setShowAddModal(true)}
-          className="w-14 h-14 bg-[#3b82f6] hover:bg-[#2563eb] rounded-full flex items-center justify-center text-white shadow-md hover:scale-105 active:scale-95 transition-all group cursor-pointer border border-white/10"
+          className="w-14 h-14 bg-[#3b82f6] hover:bg-[#2563eb] rounded-full flex items-center justify-center text-white shadow-[0_0_24px_rgba(59,130,246,0.4)] hover:shadow-[0_0_36px_rgba(0,242,255,0.5)] hover:scale-105 active:scale-95 transition-all group cursor-pointer border border-white/10"
         >
           <Plus className="w-7 h-7 group-hover:rotate-90 transition-transform duration-300" />
         </button>
       </div>
 
-      {/* BOTTOM TAB MENU NAVIGATION BAR */}
+      {/* BOTTOM TAB MENU NAVIGATION BAR (mobile-first: Home / Tasks / My Tasks / Notifications / Profile) */}
       <footer className="fixed bottom-0 left-0 right-0 z-40">
-        <nav className="bg-[#0d0d12]/85 backdrop-blur-md border-t border-white/10 flex justify-around items-center px-4 pb-safe h-20 md:max-w-md md:mx-auto md:mb-6 md:rounded-full md:border shadow-2xl shrink-0 select-none">
-          <button 
-            onClick={() => setActiveTab('dashboard')}
-            className={`flex flex-col items-center justify-center p-3 rounded-full transition-all duration-300 active:scale-90 cursor-pointer ${
-              activeTab === 'dashboard' 
-                ? 'bg-[#3b82f6]/20 text-[#3b82f6] border border-[#3b82f6]/30 shadow-sm' 
-                : 'text-white/40 hover:text-white'
-            }`}
-          >
-            <Grid className="w-5 h-5" />
-          </button>
-
-          <button 
-            onClick={() => setActiveTab('alarms')}
-            className={`flex flex-col items-center justify-center p-3 rounded-full transition-all duration-300 active:scale-90 cursor-pointer ${
-              activeTab === 'alarms' 
-                ? 'bg-[#3b82f6]/20 text-[#3b82f6] border border-[#3b82f6]/30 shadow-sm' 
-                : 'text-white/40 hover:text-white'
-            }`}
-          >
-            <Calendar className="w-5 h-5" />
-          </button>
-
-          <button 
-            onClick={() => setActiveTab('ai-command')}
-            className={`flex flex-col items-center justify-center p-3 rounded-full transition-all duration-300 active:scale-90 cursor-pointer ${
-              activeTab === 'ai-command' 
-                ? 'bg-[#3b82f6]/20 text-[#3b82f6] border border-[#3b82f6]/30 shadow-sm' 
-                : 'text-white/40 hover:text-white'
-            }`}
-          >
-            <Mic className="w-5 h-5" />
-          </button>
-
-          <button 
-            onClick={() => setActiveTab('focus-timer')}
-            className={`flex flex-col items-center justify-center p-3 rounded-full transition-all duration-300 active:scale-90 cursor-pointer ${
-              activeTab === 'focus-timer' 
-                ? 'bg-[#3b82f6]/20 text-[#3b82f6] border border-[#3b82f6]/30 shadow-sm' 
-                : 'text-white/40 hover:text-white'
-            }`}
-          >
-            <Clock className="w-5 h-5" />
-          </button>
-
-          <button 
-            onClick={() => setActiveTab('settings')}
-            className={`flex flex-col items-center justify-center p-3 rounded-full transition-all duration-300 active:scale-90 cursor-pointer ${
-              activeTab === 'settings' 
-                ? 'bg-[#3b82f6]/20 text-[#3b82f6] border border-[#3b82f6]/30 shadow-sm' 
-                : 'text-white/40 hover:text-white'
-            }`}
-          >
-            <Sliders className="w-5 h-5" />
-          </button>
+        <nav className="glass-strong border-t border-white/10 flex justify-around items-stretch px-2 safe-bottom md:max-w-md md:mx-auto md:mb-4 md:rounded-[28px] md:border glow-blue shadow-2xl shrink-0 select-none">
+          {([
+            { id: 'dashboard', label: 'Home', icon: <Grid className="w-5 h-5" /> },
+            { id: 'ai-command', label: 'Tasks', icon: <ListChecks className="w-5 h-5" /> },
+            { id: 'my-tasks', label: 'My Tasks', icon: <ClipboardList className="w-5 h-5" /> },
+            { id: 'alarms', label: 'Notifications', icon: <Bell className="w-5 h-5" /> },
+            { id: 'settings', label: 'Profile', icon: <UserRound className="w-5 h-5" /> },
+          ] as const).map((item) => (
+            <button
+              key={item.id}
+              onClick={() => setActiveTab(item.id)}
+              className={`flex flex-col items-center justify-center gap-0.5 flex-1 min-w-0 px-1 pt-2 pb-1.5 rounded-2xl transition-all duration-200 active:scale-95 cursor-pointer ${
+                activeTab === item.id ? 'text-[#00f2ff]' : 'text-white/40 hover:text-white'
+              }`}
+            >
+              <span className={`flex items-center justify-center w-9 h-9 rounded-xl transition-all ${
+                activeTab === item.id ? 'bg-[#00f2ff]/10 border border-[#00f2ff]/30' : ''
+              }`}>
+                {item.icon}
+              </span>
+              <span className={`text-[8px] font-mono uppercase tracking-wide truncate max-w-full px-0.5 ${
+                activeTab === item.id ? 'font-bold' : 'font-medium'
+              }`}>
+                {item.label}
+              </span>
+            </button>
+          ))}
         </nav>
       </footer>
 
