@@ -1,0 +1,6 @@
+{
+  "name": "TaskNova",
+  "description": "A futuristic glassmorphic command center and AI-powered task management interface.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

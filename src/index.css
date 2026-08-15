@@ -1,0 +1,111 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Helvetica Neue", Arial, sans-serif;
+  --color-accent-blue: #3b82f6;
+  --color-accent-green: #10b981;
+  --color-accent-red: #ef4444;
+}
+
+/* ---------------------------------------------------------------------------
+   TaskNova futuristic design system
+   --------------------------------------------------------------------------- */
+.text-gradient {
+  background: linear-gradient(92deg, #60a5fa 0%, #3b82f6 45%, #00f2ff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.glass {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.glass-strong {
+  background: rgba(6, 10, 24, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+}
+
+.glow-blue {
+  box-shadow: 0 0 24px rgba(59, 130, 246, 0.18), 0 0 60px rgba(59, 130, 246, 0.08);
+}
+
+/* Mobile safe-area handling (Android APK / notched devices) */
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.safe-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.glow-cyan {
+  box-shadow: 0 0 24px rgba(0, 242, 255, 0.16), 0 0 60px rgba(0, 242, 255, 0.07);
+}
+
+.hover-lift {
+  transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+}
+.hover-lift:hover {
+  transform: translateY(-4px);
+  border-color: rgba(59, 130, 246, 0.35);
+  box-shadow: 0 8px 32px rgba(59, 130, 246, 0.22), 0 0 40px rgba(0, 242, 255, 0.1);
+}
+
+/* Floating particles */
+@keyframes tasknova-float {
+  0%, 100% { transform: translate3d(0, 0, 0); opacity: 0.35; }
+  50% { transform: translate3d(8px, -22px, 0); opacity: 0.9; }
+}
+.animate-float { animation: tasknova-float 7s ease-in-out infinite; }
+
+/* Animated perspective grid floor */
+@keyframes tasknova-grid-pan {
+  from { background-position: 0 0; }
+  to { background-position: 0 64px; }
+}
+
+/* Pulsing network nodes */
+@keyframes tasknova-node {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.animate-node { animation: tasknova-node 3.2s ease-in-out infinite; }
+
+/* Expanding radar rings */
+@keyframes tasknova-ring {
+  0% { transform: scale(0.4); opacity: 0.8; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+
+/* Soft glow breathing for stat cards */
+@keyframes tasknova-glow {
+  0%, 100% { box-shadow: 0 0 18px rgba(59, 130, 246, 0.12); }
+  50% { box-shadow: 0 0 36px rgba(0, 242, 255, 0.22); }
+}
+.animate-glow { animation: tasknova-glow 4s ease-in-out infinite; }
+
+.grid-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 24px;
+  padding: 24px;
+}
+
+.label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: rgba(255, 255, 255, 0.4);
+  font-weight: 600;
+}
+
+.stat-value {
+  font-size: 32px;
+  font-weight: 300;
+  letter-spacing: -0.02em;
+}
